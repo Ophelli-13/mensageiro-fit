@@ -1,9 +1,9 @@
 import httpx
+import logging
 from datetime import datetime, timedelta, time
 from src.database.connection import SessionLocal
 from src.models.health_metric import User, OAuthToken, HealthMetric
 from src.config.settings import settings
-import logging
 
 logger = logging.getLogger("mensageiro-fit")
 
@@ -15,7 +15,6 @@ class HealthService:
         """Garante um token de acesso válido, renovando-o se necessário."""
         token_info = db.query(OAuthToken).filter_by(user_id=user_id).first()
         
-        # VERIFICAÇÃO: Se não existe token nenhum no banco para este usuário
         if not token_info:
             logger.error(f"❌ Nenhum token OAuth encontrado para o usuário {user_id}")
             return None
@@ -45,9 +44,6 @@ class HealthService:
 
     async def fetch_steps(self, token):
         """Busca o total de passos do dia atual."""
-        if not token:
-            return 0
-
         today = datetime.combine(datetime.today(), time.min)
         now = datetime.now()
         
@@ -62,41 +58,102 @@ class HealthService:
             headers = {"Authorization": f"Bearer {token}"}
             resp = await client.post(f"{self.base_url}/dataset:aggregate", json=payload, headers=headers)
             data = resp.json()
-            
             try:
                 steps = data['bucket'][0]['dataset'][0]['point'][0]['value'][0]['intVal']
                 return steps
             except (KeyError, IndexError):
                 return 0
 
+    async def fetch_heart_rate(self, token):
+        """Busca a média da frequência cardíaca do dia."""
+        today = datetime.combine(datetime.today(), time.min)
+        now = datetime.now()
+        
+        payload = {
+            "aggregateBy": [{"dataTypeName": "com.google.heart_rate.bpm"}],
+            "bucketByTime": {"durationMillis": int((now - today).total_seconds() * 1000)},
+            "startTimeMillis": int(today.timestamp() * 1000),
+            "endTimeMillis": int(now.timestamp() * 1000),
+        }
+
+        async with httpx.AsyncClient() as client:
+            headers = {"Authorization": f"Bearer {token}"}
+            resp = await client.post(f"{self.base_url}/dataset:aggregate", json=payload, headers=headers)
+            data = resp.json()
+            try:
+                # Pega a média (fpVal) do primeiro bucket
+                return int(data['bucket'][0]['dataset'][0]['point'][0]['value'][0]['fpVal'])
+            except (KeyError, IndexError):
+                return 0
+
+    async def fetch_sleep(self, token):
+        """Busca a duração do sono nas últimas 24 horas via Sessões."""
+        now = datetime.utcnow()
+        yesterday = now - timedelta(days=1)
+        
+        start_time = yesterday.isoformat() + "Z"
+        end_time = now.isoformat() + "Z"
+
+        url = f"{self.base_url}/sessions"
+        params = {
+            "startTime": start_time,
+            "endTime": end_time,
+            "activityType": 72  # ID 72 = Sleep
+        }
+
+        async with httpx.AsyncClient() as client:
+            headers = {"Authorization": f"Bearer {token}"}
+            resp = await client.get(url, headers=headers, params=params)
+            sessions = resp.json().get('session', [])
+            
+            total_minutes = 0
+            for s in sessions:
+                start = int(s['startTimeMillis'])
+                end = int(s['endTimeMillis'])
+                total_minutes += (end - start) / 60000
+            
+            if total_minutes == 0:
+                return "Dados não registrados"
+                
+            hours = int(total_minutes // 60)
+            minutes = int(total_minutes % 60)
+            return f"{hours}h {minutes}min"
+
     async def generate_daily_report(self):
-        """Orquestra a busca de dados e salva no banco."""
+        """Orquestra a busca de todos os dados e formata o relatório."""
         db = SessionLocal()
         try:
-            # 1. Busca o usuário
+            # 1. Verifica usuário
             user = db.query(User).filter_by(email=settings.USER_EMAIL).first()
-            
-            # VERIFICAÇÃO: Se o banco estiver vazio ou usuário não existir
             if not user:
-                return "⚠️ Usuário não encontrado no banco. Por favor, registre-se primeiro."
+                return "⚠️ Usuário não cadastrado no banco."
 
-            # 2. Busca o token
+            # 2. Verifica Token
             token = await self.get_valid_token(db, user.id)
             if not token:
-                return "⚠️ Falha na conexão com o Google. Token não encontrado ou expirado."
+                return "⚠️ Falha ao obter acesso ao Google Fit."
 
-            # 3. Busca os passos
+            # 3. Coleta Métricas
             steps = await self.fetch_steps(token)
+            heart = await self.fetch_heart_rate(token)
+            sleep = await self.fetch_sleep(token)
 
-            # 4. Salva a métrica no banco
+            # 4. Opcional: Salva no banco (somente passos no modelo atual)
+            # Se você quiser salvar batimentos e sono, precisará alterar o Model HealthMetric
             metric = HealthMetric(user_id=user.id, date=datetime.today().date(), steps=steps)
             db.add(metric)
             db.commit()
 
-            return f"📊 *Resumo de Saúde do Dia*\n\n👣 Passos: {steps}\n🔥 Continue se movendo!"
-        
+            # 5. Formata Mensagem Final
+            return (
+                f"📊 *Resumo de Saúde do Dia*\n\n"
+                f"👣 *Passos:* {steps}\n"
+                f"❤️ *Batimentos Médios:* {heart} BPM\n"
+                f"😴 *Sono (24h):* {sleep}\n\n"
+                f"🔥 *Continue focado em sua saúde!*"
+            )
         except Exception as e:
-            logger.error(f"🔥 Erro interno no HealthService: {e}")
-            return "❌ Ocorreu um erro ao gerar seu relatório de saúde."
+            logger.error(f"Erro ao gerar relatório: {e}")
+            return "❌ Erro interno ao processar dados de saúde."
         finally:
             db.close()
