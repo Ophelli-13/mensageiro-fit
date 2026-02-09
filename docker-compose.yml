@@ -1,10 +1,16 @@
-version: '3.8'
-
 services:
-  app:
+  bot:
     build: .
-    container_name: mensageiro-fit-app
+    container_name: mensageiro-fit-bot
     restart: always
-    env_file:
-      - .env
-    network_mode: "bridge"
+    # Removemos a linha env_file: .env daqui
+    environment:
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT}
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - USER_EMAIL=${USER_EMAIL}
