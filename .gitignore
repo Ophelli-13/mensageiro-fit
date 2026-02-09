@@ -1,0 +1,24 @@
+# Ambiente Virtual
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Configurações e Segredos (MUITO IMPORTANTE)
+.env
+credentials.json
+token.json
+client_secret*.json
+
+# Banco de Dados Local (SQLite se houver)
+*.sqlite3
+*.db
+
+# Logs
+*.log
+
+# Docker
+.docker/

@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    container_name: mensageiro-fit-app
+    restart: always
+    env_file:
+      - .env
+    network_mode: "bridge"

@@ -1,0 +1,20 @@
+# Web & API
+google-auth
+google-auth-oauthlib
+google-api-python-client
+python-telegram-bot
+pydantic-settings
+
+# Database
+sqlalchemy
+pymysql
+cryptography
+
+# Utils
+apscheduler
+python-dotenv
+
+# Dev & Quality
+pytest
+black
+ruff
