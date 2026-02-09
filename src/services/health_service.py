@@ -3,6 +3,9 @@ from datetime import datetime, timedelta, time
 from src.database.connection import SessionLocal
 from src.models.health_metric import User, OAuthToken, HealthMetric
 from src.config.settings import settings
+import logging
+
+logger = logging.getLogger("mensageiro-fit")
 
 class HealthService:
     def __init__(self):
@@ -11,6 +14,11 @@ class HealthService:
     async def get_valid_token(self, db, user_id):
         """Garante um token de acesso válido, renovando-o se necessário."""
         token_info = db.query(OAuthToken).filter_by(user_id=user_id).first()
+        
+        # VERIFICAÇÃO: Se não existe token nenhum no banco para este usuário
+        if not token_info:
+            logger.error(f"❌ Nenhum token OAuth encontrado para o usuário {user_id}")
+            return None
         
         # Se expirar em menos de 5 minutos, renova
         if token_info.expires_at <= datetime.utcnow() + timedelta(minutes=5):
@@ -25,21 +33,24 @@ class HealthService:
                     },
                 )
                 data = resp.json()
-                token_info.access_token = data["access_token"]
-                token_info.expires_at = datetime.utcnow() + timedelta(seconds=data["expires_in"])
-                db.commit()
+                if "access_token" in data:
+                    token_info.access_token = data["access_token"]
+                    token_info.expires_at = datetime.utcnow() + timedelta(seconds=data["expires_in"])
+                    db.commit()
+                else:
+                    logger.error(f"❌ Erro ao renovar token Google: {data}")
+                    return None
         
         return token_info.access_token
 
     async def fetch_steps(self, token):
         """Busca o total de passos do dia atual."""
-        # Define o início (00:00:00) e fim (23:59:59) do dia em nanosegundos
+        if not token:
+            return 0
+
         today = datetime.combine(datetime.today(), time.min)
         now = datetime.now()
         
-        start_ns = int(today.timestamp() * 1e9)
-        end_ns = int(now.timestamp() * 1e9)
-
         payload = {
             "aggregateBy": [{"dataSourceId": "derived:com.google.step_count.delta:com.google.android.gms:estimated_steps"}],
             "bucketByTime": {"durationMillis": int((now - today).total_seconds() * 1000)},
@@ -62,15 +73,30 @@ class HealthService:
         """Orquestra a busca de dados e salva no banco."""
         db = SessionLocal()
         try:
+            # 1. Busca o usuário
             user = db.query(User).filter_by(email=settings.USER_EMAIL).first()
+            
+            # VERIFICAÇÃO: Se o banco estiver vazio ou usuário não existir
+            if not user:
+                return "⚠️ Usuário não encontrado no banco. Por favor, registre-se primeiro."
+
+            # 2. Busca o token
             token = await self.get_valid_token(db, user.id)
+            if not token:
+                return "⚠️ Falha na conexão com o Google. Token não encontrado ou expirado."
+
+            # 3. Busca os passos
             steps = await self.fetch_steps(token)
 
-            # Salva a métrica no banco
+            # 4. Salva a métrica no banco
             metric = HealthMetric(user_id=user.id, date=datetime.today().date(), steps=steps)
             db.add(metric)
             db.commit()
 
             return f"📊 *Resumo de Saúde do Dia*\n\n👣 Passos: {steps}\n🔥 Continue se movendo!"
+        
+        except Exception as e:
+            logger.error(f"🔥 Erro interno no HealthService: {e}")
+            return "❌ Ocorreu um erro ao gerar seu relatório de saúde."
         finally:
             db.close()
